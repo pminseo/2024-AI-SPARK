@@ -4,17 +4,18 @@ import numpy as np
 from tqdm import tqdm
 from transform import *
 from torchvision import transforms
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from generator import CustomDataGenerator
 from models import trans_unet, swin_unet, unet
 
-INIT_EPOCH = 15
+INIT_EPOCH = 0
 EPOCHS = 100
 BATCH_SIZE = 32
 IMG_SIZE = 224                                                                  
 CHANNELS = 3
 LEARNING_RATE = 0.001
-STEPS = 1050
+STEPS = 945
+BEST_IOU = 0.0
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print('Using:', device)
@@ -46,30 +47,25 @@ def get_dataloader():
                                         ])
                                     )
 
-    # no transforms here, just resize the image
-    # valDataset = CustomDataGenerator(csv_path='data/test_meta.csv',
-    #                                 transform=transforms.Compose([
-    #                                     # Rescale(256),
-    #                                     CenterCrop(IMG_SIZE),
-    #                                     ToTensor(),
-    #                                     ])
-    #                                 )
+    train_size = int(0.9 * len(trainDataset))
+    val_size = len(trainDataset) - train_size
+    trainDataset, valDataset = random_split(trainDataset, [train_size, val_size])
 
     trainLoader = DataLoader(trainDataset, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True, num_workers=4)
-    # valLoader = DataLoader(valDataset, batch_size=BATCH_SIZE, shuffle=False, pin_memory=True, num_workers=4)
+    valLoader = DataLoader(valDataset, batch_size=BATCH_SIZE, shuffle=False, pin_memory=True, num_workers=4)
 
-    return iter(trainLoader)
-    # return iter(trainLoader), iter(valLoader)
+    # return iter(trainLoader)
+    return iter(trainLoader), iter(valLoader)
 
 def train(model, criterion, opt, scheduler):
     
-    global INIT_EPOCH, EPOCHS, BATCH_SIZE, SAVE_PATH, device
+    global INIT_EPOCH, EPOCHS, BATCH_SIZE, SAVE_PATH, device, BEST_IOU
     
     model.train()
 
     for epoch in range(INIT_EPOCH, EPOCHS):
-        # trainLoader, valLoader = get_dataloader()
-        trainLoader = get_dataloader()
+        trainLoader, valLoader = get_dataloader()
+        # trainLoader = get_dataloader()
         # when dataloader runs out of batches, it throws an exception 
         try:
             for batch in tqdm(trainLoader):
@@ -88,20 +84,45 @@ def train(model, criterion, opt, scheduler):
             pass
 
         # get model performace on val set
-        # with torch.no_grad():
-        #     accuracy = []
-        #     try:
-        #         for batch in tqdm(valLoader):
-        #             images = batch['image'].to(device)
-        #             labels = batch['mask'].to(device)
+        with torch.no_grad():
+            accuracy = []
+            miou_scores = []
+            try:
+                for batch in tqdm(valLoader):
+                    images = batch['image'].to(device)
+                    labels = batch['mask'].to(device)
 
-        #             outputs = model(images)
-        #             ls = criterion(outputs, labels).item()
-        #             accuracy += [1 - ls]
-        #     except StopIteration:
-        #         pass
+                    outputs = model(images)
+                    ls = criterion(outputs, labels).item()
+                    accuracy += [1 - ls]
+
+                    # calculate miou consider batch size = BATCH_SIZE = 32
+                    outputs = torch.sigmoid(outputs).detach().cpu().numpy()
+                    predicted_masks = np.where(outputs[:,0,:,:] > 0.25, 1, 0)
+                    labels = labels.detach().cpu().numpy()
+                    true_masks = np.where(labels[:,0,:,:] > 0.25, 1, 0)
+
+                    for pred_mask, true_mask in zip(predicted_masks, true_masks):
+                        intersection = np.logical_and(pred_mask, true_mask).sum()
+                        union = np.logical_or(pred_mask, true_mask).sum()
+                        iou_score = intersection / union if union != 0 else 0
+                        miou_scores.append(iou_score)
+
+                miou = np.mean(miou_scores)
+
+                if miou > BEST_IOU:
+                    BEST_IOU = miou
+                    torch.save({'epoch': epoch + 1,
+                                'model_state_dict': model.state_dict(),
+                                'optimizer_state_dict': opt.state_dict(),
+                                'loss': loss,
+                                }, './train_output/model_checkpoint_unetours_best.pt')
+                    print(f'epoch: {epoch + 1} checkpoint saved. miou: {miou}')
+
+            except StopIteration:
+                pass
             
-        #     print('Epoch: {}/{} - accuracy: {:.4f}'.format(epoch+1, EPOCHS, np.mean(accuracy)))
+            print('Epoch: {}/{} - accuracy: {:.4f}'.format(epoch+1, EPOCHS, np.mean(accuracy)))
 
         # save model checkpoint
         if (epoch + 1) % 5 == 0:
