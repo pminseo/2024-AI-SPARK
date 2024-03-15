@@ -14,6 +14,7 @@ TEST_IMAGE = 'D:\data/test_img'
 TRAIN_CSV = 'D:\data/train_meta.csv'
 TEST_CSV = 'D:\data/test_meta.csv'
 
+TRAIN_LEN = int(33575 * 0.9)
 
 class CustomDataGenerator(torch.utils.data.Dataset):
     def __init__(self, csv_path, transform=None):
@@ -42,6 +43,67 @@ class CustomDataGenerator(torch.utils.data.Dataset):
             sample = self.transform(sample)
 
         return sample
+    
+
+class CustomDataGenerator_train(torch.utils.data.Dataset):
+    def __init__(self, csv_path, transform=None):
+        # read file names from csv files
+        df = pd.read_csv(BASE_PATH + csv_path)
+        img, mask = df.columns.tolist()
+        
+        self.images = [os.path.join(TRAIN_IMAGE, x) for x in df[img].tolist()[:TRAIN_LEN]]
+        self.masks = [os.path.join(TRAIN_MASK, x) for x in df[mask].tolist()[:TRAIN_LEN]]
+
+        self.MAX_PIXEL_VALUE = 65535                                            # defined in the original code
+        self.transform = transform                                              # image transforms for data augmentation
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+
+        img = rasterio.open(self.images[idx]).read((7,6,2))               # only extract 3 channels  
+        img = np.float32(img.transpose((1, 2, 0))) / self.MAX_PIXEL_VALUE
+
+        mask = rasterio.open(self.masks[idx]).read().transpose((1, 2, 0))        
+        
+        sample = {'image': img, 'mask': mask}
+        
+        if self.transform:
+            sample = self.transform(sample)
+
+        return sample
+
+class CustomDataGenerator_val(torch.utils.data.Dataset):
+    def __init__(self, csv_path, transform=None):
+        # read file names from csv files
+        df = pd.read_csv(BASE_PATH + csv_path)
+        img, mask = df.columns.tolist()
+        
+        self.images = [os.path.join(TRAIN_IMAGE, x) for x in df[img].tolist()[TRAIN_LEN:]]
+        self.masks = [os.path.join(TRAIN_MASK, x) for x in df[mask].tolist()[TRAIN_LEN:]]
+
+        self.MAX_PIXEL_VALUE = 65535                                            # defined in the original code
+        self.transform = transform                                              # image transforms for data augmentation
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+
+        img = rasterio.open(self.images[idx]).read((7,6,2))               # only extract 3 channels  
+        img = np.float32(img.transpose((1, 2, 0))) / self.MAX_PIXEL_VALUE
+
+        mask = rasterio.open(self.masks[idx]).read().transpose((1, 2, 0))        
+        
+        sample = {'image': img, 'mask': mask, 'name': self.images[idx].split('\\')[-1]}
+        
+        if self.transform:
+            sample = self.transform(sample)
+
+        return sample
+
+
 
 class CustomDataGeneratorTest(torch.utils.data.Dataset):
     def __init__(self, csv_path, transform=None):

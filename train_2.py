@@ -5,12 +5,8 @@ from tqdm import tqdm
 from transform import *
 from torchvision import transforms
 from torch.utils.data import DataLoader, random_split
-from generator import *
+from generator import CustomDataGenerator
 from models import trans_unet, swin_unet, unet
-from torch.utils.tensorboard import SummaryWriter
-writer = SummaryWriter()
-
-
 torch.manual_seed(0)
 INIT_EPOCH = 0
 EPOCHS = 100
@@ -37,50 +33,28 @@ class dice_loss(torch.nn.Module):
        num = 2. * intersection + self.smooth
        den = logf.sum() + labf.sum() + self.smooth
        return 1 - (num/den)
-    
-class DiceCELoss(torch.nn.Module):
-    def __init__(self):
-        super(DiceCELoss, self).__init__()
-        self.smooth = 1.
-        self.bce_with_logits = torch.nn.BCEWithLogitsLoss()
-
-    def forward(self, logits, labels):
-        labels = labels.float().squeeze(1)  
-        logits = logits.squeeze(1)  
-
-        bce_loss = self.bce_with_logits(logits, labels)
-
-        probs = torch.sigmoid(logits)
-        intersection = (probs * labels).sum(dim=(1, 2))
-        dice_denominator = probs.sum(dim=(1, 2)) + labels.sum(dim=(1, 2))
-        dice_loss = 1 - (2. * intersection + self.smooth) / (dice_denominator + self.smooth)
-        dice_loss = dice_loss.mean()
-
-        return bce_loss + dice_loss
-
 
 def get_dataloader():
-    trainDataset = CustomDataGenerator_train(csv_path='data/train_meta.csv',
+    trainDataset = CustomDataGenerator(csv_path='data/train_meta.csv',
                                     transform=transforms.Compose([
                                         # Rescale(256),
                                         RandomFlip(0.5),
                                         RandomRotate(0.5),
                                         RandomErase(0.2),
                                         RandomShear(0.2),
-                                        # RandomCrop(IMG_SIZE),
-                                        ToTensor(),
-                                        ])
-                                    )
-    valDataset = CustomDataGenerator_val(csv_path='data/train_meta.csv',
-                                    transform=transforms.Compose([
-                                        # Rescale(256),
-                                        # CenterCrop(IMG_SIZE),
+                                        RandomCrop(IMG_SIZE),
                                         ToTensor(),
                                         ])
                                     )
 
+    train_size = int(0.9 * len(trainDataset))
+    val_size = len(trainDataset) - train_size
+    trainDataset, valDataset = random_split(trainDataset, [train_size, val_size])
+
     trainLoader = DataLoader(trainDataset, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True, num_workers=4)
     valLoader = DataLoader(valDataset, batch_size=BATCH_SIZE, shuffle=False, pin_memory=True, num_workers=4)
+
+    # return iter(trainLoader)
     return iter(trainLoader), iter(valLoader)
 
 def train(model, criterion, opt, scheduler):
@@ -102,7 +76,7 @@ def train(model, criterion, opt, scheduler):
 
                 outputs = model(images)
                 loss = criterion(outputs, labels)
-                writer.add_scalar('Loss/train', loss, epoch)
+
                 loss.backward()                                                 # getting gradients
                 opt.step()                                                      # updating parameters
                 scheduler.step()                                                # to change the learing rate
@@ -128,16 +102,10 @@ def train(model, criterion, opt, scheduler):
                     labels = labels.detach().cpu().numpy()
                     true_masks = np.where(labels[:,0,:,:] > 0.25, 1, 0)
 
-                    # print(outputs.shape, labels.shape, predicted_masks.shape, true_masks.shape)
-                    # (32, 1, 224, 224) (32, 1, 224, 224) (32, 224, 224) (32, 224, 224)
-
                     for pred_mask, true_mask in zip(predicted_masks, true_masks):
-                        logf = pred_mask.flatten()
-                        labf = true_mask.flatten()
-                        intersection = (logf * labf).sum()
-                        total = (logf + labf).sum()
-                        union = total - intersection
-                        iou_score = (intersection + 1.) / (union + 1.)
+                        intersection = np.logical_and(pred_mask, true_mask).sum()
+                        union = np.logical_or(pred_mask, true_mask).sum()
+                        iou_score = intersection / union if union != 0 else 0
                         miou_scores.append(iou_score)
 
                 miou = np.mean(miou_scores)
@@ -154,9 +122,8 @@ def train(model, criterion, opt, scheduler):
             except StopIteration:
                 pass
             
-        print('Epoch: {}/{} - accuracy: {:.4f}'.format(epoch+1, EPOCHS, np.mean(accuracy)))
-        writer.add_scalar('Accuracy/train', np.mean(accuracy), epoch)
-        writer.add_scalar('mIoU/train', miou, epoch)
+            print('Epoch: {}/{} - accuracy: {:.4f}'.format(epoch+1, EPOCHS, np.mean(accuracy)))
+
         # save model checkpoint
         if (epoch + 1) % 5 == 0:
             torch.save({'epoch': epoch + 1,
@@ -189,7 +156,7 @@ if __name__ == '__main__':
     model, SAVE_PATH = get_model(NAME)
     print(SAVE_PATH)
 
-    criterion = DiceCELoss()
+    criterion = dice_loss()
     opt = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(opt,
                                                     max_lr=LEARNING_RATE*10,
@@ -208,4 +175,3 @@ if __name__ == '__main__':
         # loss = checkpoint['loss']
 
     train(model, criterion, opt, scheduler)
-    writer.close()
