@@ -79,7 +79,9 @@ def predict_(model):
                 images = batch['image'].to(device)
                 # labels = batch['mask'].to(device)
                 name = batch['name'][0]
-                outputs = model(images).detach().cpu().numpy()
+                outputs = model(images)
+
+                outputs = torch.sigmoid(outputs).detach().cpu().numpy()
                 outputs = np.where(outputs[0,0,:,:] > 0.25, 1, 0)
                 outputs = outputs.astype(np.uint8)
                 y_pred_dict[name] = outputs
@@ -113,6 +115,8 @@ if __name__ == '__main__':
         pass
     
     model, SAVE_PATH = get_model(NAME)
+    SAVE_PATH = "./train_output/model_checkpoint_unetours_best.pt"
+
     print(SAVE_PATH)
 
     checkpoint = torch.load(SAVE_PATH)

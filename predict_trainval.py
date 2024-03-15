@@ -5,7 +5,7 @@ from tqdm import tqdm
 from transform import *
 from torchvision import transforms
 from torch.utils.data import DataLoader
-from generator import CustomDataGeneratorTest
+from generator import *
 from models import trans_unet, swin_unet, unet
 import joblib
 
@@ -60,32 +60,49 @@ def predict(model):
             pass
 
 def predict_(model):
-    testDataset = CustomDataGeneratorTest(csv_path='data/test_meta.csv',
+    valDataset = CustomDataGenerator_val(csv_path='data/train_meta.csv',
                                     transform=transforms.Compose([
                                     # Rescale(256),
                                     # CenterCrop(IMG_SIZE),
-                                    ToTensor_(),
+                                    ToTensor(),
                                     ])
                                 )
-    testLoader = DataLoader(testDataset, batch_size=BATCH_SIZE, shuffle=False)
-    testLoader = iter(testLoader)
+    valLoader = DataLoader(valDataset, batch_size=BATCH_SIZE, shuffle=False)
+    valLoader = iter(valLoader)
     
-    y_pred_dict = {}
+    # y_pred_dict = {}
+    miou_scores = []
     
     model.eval()
     with torch.no_grad():
         try:
-            for batch in tqdm(testLoader):
+            for batch in tqdm(valLoader):
                 images = batch['image'].to(device)
-                # labels = batch['mask'].to(device)
-                name = batch['name'][0]
-                outputs = model(images).detach().cpu().numpy()
-                outputs = np.where(outputs[0,0,:,:] > 0.25, 1, 0)
-                outputs = outputs.astype(np.uint8)
-                y_pred_dict[name] = outputs
+                labels = batch['mask'].to(device)
+                # name = batch['name'][0]
+                outputs = model(images)
+
+                outputs = torch.sigmoid(outputs).detach().cpu().numpy()
+                predicted_masks = np.where(outputs[:,0,:,:] > 0.25, 1, 0)
+                labels = labels.detach().cpu().numpy()
+                true_masks = np.where(labels[:,0,:,:] > 0.25, 1, 0)
+
+                for pred_mask, true_mask in zip(predicted_masks, true_masks):
+                    logf = pred_mask.flatten()
+                    labf = true_mask.flatten()
+                    intersection = (logf * labf).sum()
+                    total = (logf + labf).sum()
+                    union = total - intersection
+                    iou_score = (intersection + 1.) / (union + 1.)
+                    miou_scores.append(iou_score)
+
+
+            miou = np.mean(miou_scores)
+            print(f'miou: {miou}')
+                # y_pred_dict[name] = outputs
         except StopIteration:
             pass
-    joblib.dump(y_pred_dict, 'y_pred_dict.pkl')
+    # joblib.dump(y_pred_dict, 'y_pred_dict.pkl')
 
 def get_model(name):
     global IMG_SIZE, BATCH_SIZE, CHANNELS, device
@@ -113,8 +130,8 @@ if __name__ == '__main__':
         pass
     
     model, SAVE_PATH = get_model(NAME)
+    # SAVE_PATH = "./train_output/model_checkpoint_unetours_best.pt"
     print(SAVE_PATH)
-
     checkpoint = torch.load(SAVE_PATH)
     model.load_state_dict(checkpoint['model_state_dict'])
 
